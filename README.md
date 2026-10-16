@@ -1,6 +1,6 @@
 # treekv: Structure-Aware KV Caching with llama.cpp
 
-**Project report by Reehan Sarmah-MT25036** · Large Deep Learning Systems (LDLS), IIIT-Delhi, Monsoon 2026 ·
+**Project report by Ishaan Kumar - MT25069** · Large Deep Learning Systems (LDLS), IIIT-Delhi, Monsoon 2026 ·
 
 This README is my report for the individual submission. The project was carried out in a team of three (Pinaksh, Reehan and Ishaan). Section 3 describes my own work, and section 4 describes how the work was divided.
 
@@ -8,8 +8,8 @@ This repository contains only the files of my role and the files shared by the w
 
 | | |
 |---|---|
-| My role | Parser & schema: domains (Markdown + LaTeX), JSON schema + merge rules, parsers, 10 documents, tree statistics |
-| Tasks from the brief assigned to me | choice of document types; JSON schema and merge rules; parsers and documents (each under 2,000 tokens) |
+| My role | Tests & report: batched trace, test cases and runner, timings, slide |
+| Tasks from the brief assigned to me | trace of the `batched` example; running the driver on all documents; Tests 1 and 2; timings; the slide; the repository README |
 | Model | Llama-3.2-1B-Instruct, 4-bit quantized (Q4_K_M), run on the CPU only |
 | Inference engine | llama.cpp, fixed at commit `10a60cf` |
 | Document types | Markdown and LaTeX, five documents each |
@@ -46,38 +46,43 @@ The aim of week 1 was to build the basic system on a CPU and to show, with tests
 
 ## 3. My contribution
 
-My assigned role was the **parser and the schema**: choosing the document types, designing the JSON format and its merge rules, turning documents into trees, and measuring those trees.
+My assigned role was **tests and the report**: tracing llama.cpp's `batched` example, designing the test cases and the program that runs them, and presenting the results.
 
 **What I built in my assigned role**
 
-- **The choice of document types.** We used two types of documents. In Markdown files, the headings give the structure. In LaTeX files, the sections, theorems and proofs give the structure. Using two types showed that one tree format works for different kinds of text.
-- **The JSON schema** (`schema/SCHEMA.md`). Every part of a document is stored with the five fields required by the brief (`tokens`, `positions`, `seq_ids`, `node_type`, `parent`) and two extra fields (`id` and `text`). The schema also fixes the rules for positions, sequence IDs and merging. The parser and Pinaksh's driver both follow it, so a file written by one is always understood by the other.
-- **The tree builder** (`parser/tree_schema.py`). It merges very small parts and gives every leaf its own sequence ID. Every higher part receives the IDs of all leaves below it. The builder then numbers the positions and checks the result against llama.cpp's rules before any file is written. The token counts come from llama.cpp's own tokenizer and the same model file, so they match what the driver sees.
-- **The Markdown parser** (`parser/md_parser.py`) and **the command-line tool** (`parser/parse.py`). The parser uses the markdown-it-py library, so a `#` inside a code block is never mistaken for a heading. A stack of open headings places every heading under the nearest higher heading, even when a document skips a level. The tool chooses the parser from the file type. It refuses to write a file if the parts, joined in order, do not give back the original document exactly.
-- **The tree statistics** (`parser/make_stats.py`, `results/stats.md`). For every document, the table gives the number of tokens, the depth of the tree, the number of leaves, the size of the leaves and of the top-level sections, and the share of tokens that are formatting rather than content.
-- **The parser tests** (`tests/test_parsers.py`). There are 23 automated tests, all passing. They cover unusual inputs, for example a document without headings, an empty file, headings that skip a level, commented-out LaTeX sections, a document with 400 sections, and the limit on the number of sequences.
+- **The trace of `batched`** (`docs/trace_batched.md`, `results/batched_debug.log`). I matched each step of the example to the `llama.h` function it calls. I then ran it with llama.cpp's batch debug output switched on, using two sequences. The log shows two things:
+  - every prompt token is stored once and carries both sequence IDs;
+  - the two continuations ("Sofia" and "Bob") each carry one sequence ID and both use position 5.
+
+  This is the same pattern as in our tree: shared headings carry several IDs, and sibling sections reuse the same position numbers.
+- **The test cases** (`tests/cases.json`). For each of the ten documents, a case names three things:
+  - a leaf A and a question about it;
+  - a different leaf B, with new text for the edit;
+  - a subtree C to remove.
+
+  C must not contain A or any part above A, because removing those would rightly change the answer. In `sample2e.tex`, which has only two sections, B and C are therefore the same section.
+- **The test runner** (`tests/run_tests.py`). For every case, it runs the driver three times, and once more with the option `--keep-layout`. It then applies the pass rule and writes the tables `results/test_results.md` and `results/timings.md`. A case passes only if the answer about A is identical in every run. For Test 2, the freed memory must also be within 5% of the expected amount (number of removed tokens × 32 KiB).
 
 **Work completed by a teammate**
 
-The LaTeX parser and the final set of ten documents were completed by Pinaksh during the final integration, as described in Pinaksh's report. They use the schema, the merge rules and the tree builder described above.
+The final run of all tests, the timing measurements and the slide were completed by Pinaksh during the final integration, as described in Pinaksh's report. They use the test cases and the test runner described above.
 
 **Results of my part**
 
-- All ten documents give back their source files exactly when their parts are joined in order.
-- The documents are between 487 and 1,732 tokens long, below the limit of 2,000 tokens.
-- The trees have a depth of 2 to 5 and between 2 and 8 leaves.
-- The share of formatting tokens ranges from 9.0% (`rpc.md`) to 37.8% (`mtmd.md`).
+- **Test 1 (edit B):** passed in 10 of 10 documents. The scores of the answer about A did not change at all.
+- **Test 2 (remove C):** passed in 10 of 10 documents. In total, 115.22 MiB of memory was freed, against 115.19 MiB expected.
+- **Repeated runs:** in every document, the answer about A was the same in all four runs.
 
 **Problems I met and how I solved them**
 
-- **Very small parts.** Some headings hold only a line or two of text. Before merging, the ten documents had 98 parts, and 5 of their 57 leaves were shorter than 32 tokens. A part this small gives the model too little context and uses up a sequence ID. The merge rules join such a part with a neighbouring leaf, or with its parent's text if it comes first. This always keeps the reading order. After merging, the documents have 94 parts and 53 leaves.
-- **A small part with no neighbour to join.** One 19-token closing paragraph in `online_softmax.tex` comes directly after a lemma that has a proof below it. It has no neighbouring leaf, and moving it into its parent would break the reading order. It therefore stays as its own leaf. This case is stated in the schema and in the report.
-- **The limit on sequence IDs.** llama.cpp supports at most 256 sequence IDs, and the first version of the limit allowed 255 leaves. The final review showed that the driver needs two spare IDs: one for questions and one for the `--keep-layout` option. The limit was corrected to 254 leaves, and a test now checks it.
-- **Keeping the parser and the driver in agreement.** A small mistake in the JSON files, for example a gap in the positions, would only show up later as an error inside llama.cpp. The tree builder therefore checks every rule itself before writing a file, and `parse.py` checks the reading order before and after merging.
+- **The debug output did not appear.** With `LLAMA_BATCH_DEBUG=1`, the `batched` example at first printed no batch details. The reason is that it uses llama.cpp's common logger, which hides debug messages. Adding the option `-v` made them visible.
+- **Tokens that belong to several sequences.** llama.cpp stops with an error when one token carries several sequence IDs and each sequence has its own memory. The option `--kv-unified`, which gives all sequences one shared memory, is therefore required. Our driver sets it too.
+- **Deciding what "unchanged" means.** After removing a section, the scores changed by up to 0.44 in four documents, although the answer text stayed the same. The pass rule was therefore based on the answer text, and the scores are reported as additional evidence. To show that the score changes come only from the memory layout, the runner also runs each case with `--keep-layout`. In that run, the change is exactly zero in every document.
+- **A question with an unclear answer.** The first question for `embedding.md` led to the answer "0". An answer this short cannot show whether the model really used section A. The question was replaced by "What does the value 2 of --embd-normalize mean?", which leads to a full sentence.
 
 **What I learned**
 
-I learned that most documents already contain a clear structure, and that this structure can be turned into a tree in a simple and checkable way. I also learned to count in tokens rather than characters: a short heading or a table can cost more tokens than expected, and the share of formatting tokens differed by a factor of four between documents. Finally, I learned that the limits of the engine, such as the number of sequence IDs and the need for gap-free positions, have to be designed into the data format from the start.
+I learned that reading an engine's own example, with its debug output switched on, is the quickest way to understand its interface. I also learned that a test must state exactly what "unchanged" means before it is run, and that the main pass rule should be kept separate from the extra evidence. Finally, I learned that repeated runs and fixed decoding are needed before two results can be compared. Without them, a difference cannot be traced to its cause.
 
 ## 4. Team and division of work
 
@@ -86,7 +91,7 @@ The work was divided into three roles. The table lists each teammate's assigned 
 | teammate | assigned role | files of that role |
 |---|---|---|
 | Pinaksh | Engine: llama.cpp build (CPU), the shared C++ driver, the mask trace, Test 0 | `driver/tree_driver.cpp`, `driver/CMakeLists.txt`, `docs/mask_trace.md`, `results/test0.json`, `results/test0_short_prompts.json`, `results/example_run.json`, `results/kv_debug.log` |
-| Ishaan | Tests & report: batched trace, test cases and runner, timings, slide | `docs/trace_batched.md`, `tests/run_tests.py`, `tests/cases.json`, `results/batched_debug.log`, `results/test_results.md`, `results/timings.md`, `slide/*` |
+| Reehan | Parser & schema: domains (Markdown + LaTeX), JSON schema + merge rules, parsers, 10 documents, tree statistics | `schema/SCHEMA.md`, `parser/tree_schema.py`, `parser/md_parser.py`, `parser/tex_parser.py`, `parser/parse.py`, `parser/make_stats.py`, `tests/test_parsers.py`, `data/SOURCES.md`, `data/markdown/*`, `data/latex/*`, `data/examples/*`, `results/stats.md` |
 
 ## 5. Method
 
@@ -224,7 +229,7 @@ The brief did not answer every question, and no clarification was available befo
 - **Model:** the Instruct version of Llama-3.2-1B was used. It has the same size, architecture and quantization as the base model, but it answers questions and then stops, which suits this task.
 - **"Evict a subtree by position range":** a subtree is removed by its own sequence IDs together with its position range. Because sibling sections share position numbers, removing a position range from *all* sequences would also delete unrelated sections.
 - **"The output is unchanged" / "the answer holds":** the answer text must be identical in every run. The scores (logits) are reported as additional evidence, as explained in finding 4.
-- **AI tools:** an AI assistant(LLM) (Claude) was used for parts of the design, code and writing. All results in this report come from running the code after the review.
+- **AI tools:** an AI assistant (LLM)(Claude) was used for parts of the design, code and writing. All results in this report come from running the code after the review.
 
 ## 10. Limitations
 
@@ -257,42 +262,17 @@ mkdir -p models && curl -L -o models/Llama-3.2-1B-Instruct-Q4_K_M.gguf \
 |---|---|
 | `.gitignore` | shared |
 | `README.md` | shared |
-| `data/SOURCES.md` | my role |
-| `data/examples/library_guide.json` | my role |
-| `data/examples/library_guide.md` | my role |
-| `data/examples/recipes.json` | my role |
-| `data/examples/recipes.md` | my role |
-| `data/latex/kv_cache.json` | my role |
-| `data/latex/kv_cache.tex` | my role |
-| `data/latex/online_softmax.json` | my role |
-| `data/latex/online_softmax.tex` | my role |
-| `data/latex/roofline.json` | my role |
-| `data/latex/roofline.tex` | my role |
-| `data/latex/sample2e.json` | my role |
-| `data/latex/sample2e.tex` | my role |
-| `data/latex/tree_mask.json` | my role |
-| `data/latex/tree_mask.tex` | my role |
-| `data/markdown/LICENSE-llama.cpp` | my role |
-| `data/markdown/embedding.json` | my role |
-| `data/markdown/embedding.md` | my role |
-| `data/markdown/llguidance.json` | my role |
-| `data/markdown/llguidance.md` | my role |
-| `data/markdown/mtmd.json` | my role |
-| `data/markdown/mtmd.md` | my role |
-| `data/markdown/rpc.json` | my role |
-| `data/markdown/rpc.md` | my role |
-| `data/markdown/security.json` | my role |
-| `data/markdown/security.md` | my role |
-| `parser/make_stats.py` | my role |
-| `parser/md_parser.py` | my role |
-| `parser/parse.py` | my role |
-| `parser/tex_parser.py` | my role |
-| `parser/tree_schema.py` | my role |
+| `docs/trace_batched.md` | my role |
 | `requirements.txt` | shared |
 | `results/README.md` | shared |
-| `results/stats.md` | my role |
-| `schema/SCHEMA.md` | my role |
-| `tests/test_parsers.py` | my role |
+| `results/batched_debug.log` | my role |
+| `results/test_results.md` | my role |
+| `results/timings.md` | my role |
+| `slide/make_slide.py` | my role |
+| `slide/slide.html` | my role |
+| `slide/slide.pdf` | my role |
+| `tests/cases.json` | my role |
+| `tests/run_tests.py` | my role |
 | `tools/make_submission.py` | shared |
 | `tools/ownership.json` | shared |
 | `tools/setup_driver.sh` | shared |
